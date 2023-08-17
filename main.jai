@@ -45,7 +45,7 @@ Interval :: struct {
 
 EMPTY_INTERVAL :: Interval.{min=FLOAT32_MAX, max=FLOAT32_MIN};
 UNIVERSE_INTERVAL :: Interval.{min=FLOAT32_MIN, max=FLOAT32_MAX};
-DEFAULT_INTERVAL :: Interval.{min=0.0, max=FLOAT32_MAX};
+DEFAULT_INTERVAL :: Interval.{min=0.001, max=FLOAT32_MAX};
 
 interval_contains :: (using interval: Interval, value: float) -> bool {
     return value >= min && value <= max;
@@ -144,13 +144,15 @@ random_on_same_hemisphere :: (normal: Vector3) -> Vector3 {
     return ifx dot(normal, r) > 0.0 then r else -r;
 }
 
-ray_color :: (using ray: Ray, hittables: [] *Hittable) -> Vector3 {
-    success, hit_record := hit_closest(hittables, ray, DEFAULT_INTERVAL);
+ray_color :: (ray: Ray, hittables: [] *Hittable) -> Vector3 {
+    success, r := hit_closest(hittables, ray, DEFAULT_INTERVAL);
     if success {
-        return hit_record.normal;
+	target := r.p + r.normal + random_on_same_hemisphere(r.normal);
+	return 0.5 * ray_color(.{r.p, target - r.p}, hittables);
+        //return hit_record.normal;
     } else {
         // draw sky
-	unit_dir := unit_vector(dir);
+	unit_dir := unit_vector(ray.dir);
 	a := 0.5 * (unit_dir.y + 1.0);
 	return (1.0 - a) * ONE + a * .{0.5, 0.7, 1.0};
     }
