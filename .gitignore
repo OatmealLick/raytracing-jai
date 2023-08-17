@@ -1,0 +1,6 @@
+how_to/ 
+modules/
+*.exe
+*.ppm
+*.pdb
+.build/
