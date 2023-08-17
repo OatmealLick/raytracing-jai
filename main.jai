@@ -102,15 +102,12 @@ hit :: (thing: *Hittable, using ray: Ray, interval: Interval) -> bool, Hit_Recor
 
 		t = t_candidate;
 		p = at(ray, t);
-		n := (p - s.center) / s.radius;
-		outward_normal := (n + ONE) * 0.5;
-		// consider not just using n not outward normal
+		normal = (p - s.center) / s.radius;
 
-		if dot(outward_normal, dir) > 0.0 {
-		    normal = -outward_normal;
+		if dot(normal, dir) > 0.0 {
+		    normal = -normal;
 		    front_face = false;
 		} else {
-		    normal = outward_normal;
 		    front_face = true;
 		}
 
@@ -149,7 +146,6 @@ ray_color :: (ray: Ray, hittables: [] *Hittable) -> Vector3 {
     if success {
 	target := r.p + r.normal + random_on_same_hemisphere(r.normal);
 	return 0.5 * ray_color(.{r.p, target - r.p}, hittables);
-        //return hit_record.normal;
     } else {
         // draw sky
 	unit_dir := unit_vector(ray.dir);
@@ -199,6 +195,7 @@ main :: () {
 
 	for x: 0..image_width - 1 {
 	    result_color: Vector3; // make sure its zero
+	    if y == 0 && x == 0 lo("Result color inited to %\n", result_color);
 
 	    for 0..samples_per_pixel-1 {
 		pixel_location := p00_location
