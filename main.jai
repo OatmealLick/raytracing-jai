@@ -6,9 +6,11 @@ Simp :: #import "Simp";
 Windows :: #import "Windows";
 Input :: #import "Input";
 #import "Window_Creation";
+#import "Machine_X64";
 
 #load "material.jai";
 #load "util.jai";
+#load "time-cpu.jai";
 
 MAX_COLOR_VALUE :: 255;
 
@@ -47,6 +49,8 @@ Hit_Record :: struct {
     front_face: bool;
     material: Material;
 }
+
+state: RenderState;
 
 hit :: (thing: *Hittable, using ray: Ray, interval: Interval) -> bool, Hit_Record {
     if #complete thing.hittable_kind == {
@@ -132,10 +136,17 @@ generate_random_pixel_offset :: (pixel_delta_u: Vector3, pixel_delta_v: Vector3)
     return px * pixel_delta_u + py * pixel_delta_v;
 }
 
-state: RenderState;
-
 linear_to_gamma :: (value: float) -> float {
     return sqrt(value);
+}
+
+defocus_disk_sample :: (using c: Camera) -> Vector3 {
+    offset := unit_vector(Vector3.{
+	random_get_within_range(-1.0, 1.0),
+	random_get_within_range(-1.0, 1.0),
+	0
+    });
+    return lookfrom + (offset.x * defocus_disk_u) + (offset.y * defocus_disk_v);
 }
 
 to_rgb :: (color: Vector3) -> u8, u8, u8 {
@@ -206,17 +217,23 @@ Camera :: struct {
     lookat: Vector3;
     vup: Vector3;
     vfov: int;
+    defocus_angle: float;
+    focus_dist: float;
 
     // to be set by create_camera(...)
     pixel_delta_u: Vector3;
     pixel_delta_v: Vector3;
     p00_location: Vector3;
+    defocus_disk_u: Vector3;
+    defocus_disk_v: Vector3;
 }
 
 create_camera :: (_lookfrom: Vector3,
 		  _lookat: Vector3,
 		  _vup: Vector3,
 		  _vfov: int,
+		  _defocus_angle: float,
+		  _focus_dist: float,
 		  image_width: int,
 		  image_height: int) -> Camera
 {
@@ -225,11 +242,12 @@ create_camera :: (_lookfrom: Vector3,
     lookat = _lookat;
     vup = _vup;
     vfov = _vfov;
+    defocus_angle = _defocus_angle;
+    focus_dist = _focus_dist;
 
-    focal_length := length(lookfrom - lookat);
     theta := deg_to_rad(xx vfov);
     h := tan(theta / 2.0);
-    viewport_height := 2 * h * focal_length;
+    viewport_height := 2 * h * focus_dist;
     viewport_width := viewport_height * (cast(float) image_width / image_height);
 
     w := unit_vector(lookfrom - lookat);
@@ -242,26 +260,35 @@ create_camera :: (_lookfrom: Vector3,
     pixel_delta_v = viewport_v / cast(float) image_height;
 
     p00_location = lookfrom
-	- (focal_length * w)
+	- (focus_dist * w)
 	- viewport_u / 2.0
 	- viewport_v / 2.0
 	+ pixel_delta_u / 2.0
 	+ pixel_delta_v / 2.0;
+
+    defocus_radius := focus_dist * tan(deg_to_rad(defocus_angle / 2.0));
+    defocus_disk_u = u * defocus_radius;
+    defocus_disk_v = v * defocus_radius;
+    
     return c;
 }
 
 main :: () {
-    image_width := 400;
+    cpu_freq := estimate_cpu_frequency();
+    
+    image_width := 200;
     aspect_ratio := 16.0 / 9.0;
     image_height := cast(int) (cast(float) image_width / aspect_ratio);
     samples_per_pixel := 10;
     max_depth := 10;
 
     using c := create_camera(
-	_lookfrom = Vector3.{-2, 2, 1},
-	_lookat = Vector3.{0, 0, -1},
+	_lookfrom = Vector3.{13, 2, 3},
+	_lookat = Vector3.{0, 0, 0},
 	_vup = Vector3.{0, 1, 0},
-	_vfov = 90,
+	_vfov = 20,
+	_defocus_angle = 0.6,
+	_focus_dist = 10.0,
 	image_width=image_width,
 	image_height=image_height
     );
@@ -271,23 +298,66 @@ main :: () {
     state = initialize_rendering(image_width, image_height);
     texture_data := NewArray(3 * image_width * image_height, u8);
 
-    material_ground := Material.{material_kind=.LAMBERTIAN, albedo=.{0.8, 0.8, 0.0}};
-    material_center := Material.{material_kind=.LAMBERTIAN, albedo=.{0.1, 0.2, 0.5}};
-    material_left   := Material.{material_kind=.DIELECTRIC, refraction=1.5};
-    material_right  := Material.{material_kind=.METAL, albedo=.{0.8, 0.6, 0.2}, fuzz=0.0};
+    // material_ground := Material.{material_kind=.LAMBERTIAN, albedo=.{0.8, 0.8, 0.0}};
+    // material_center := Material.{material_kind=.LAMBERTIAN, albedo=.{0.1, 0.2, 0.5}};
+    // material_left   := Material.{material_kind=.DIELECTRIC, refraction=1.5};
+    // material_right  := Material.{material_kind=.METAL, albedo=.{0.8, 0.6, 0.2}, fuzz=0.0};
 
-    ground := Sphere.{center=.{0, -100.5, -1}, radius=100, material=material_ground};
-    center := Sphere.{center=.{0, 0, -1}, radius=0.5, material=material_center};
-    left   := Sphere.{center=.{-1, 0, -1}, radius=0.5, material=material_left};
-    hollow := Sphere.{center=.{-1, 0, -1}, radius=-0.4, material=material_left};
-    right  := Sphere.{center=.{1, 0, -1}, radius=0.5, material=material_right};
+    // ground := Sphere.{center=.{0, -100.5, -1}, radius=100, material=material_ground};
+    // center := Sphere.{center=.{0, 0, -1}, radius=0.5, material=material_center};
+    // left   := Sphere.{center=.{-1, 0, -1}, radius=0.5, material=material_left};
+    // hollow := Sphere.{center=.{-1, 0, -1}, radius=-0.4, material=material_left};
+    // right  := Sphere.{center=.{1, 0, -1}, radius=0.5, material=material_right};
+
+    material_ground := Material.{material_kind=.LAMBERTIAN, albedo=.{0.5, 0.5, 0.5}};
+    ground := Sphere.{center=.{0, -1000, -1}, radius=1000, material=material_ground};
     
-    hittables: [] *Hittable = .[
-	    *ground, *center, *left, *hollow, *right
-    ];
+    hittables: [..] *Hittable;
+    array_add(*hittables, *ground);
+
+    r :: () -> float {
+	return random_get_within_range(0.0, 1.0);
+    }
+
+    rv :: random_vector;
+
+    for a: -11..11 for b: -11..11 {
+	mat := r();
+	to_be_center := Vector3.{a + 0.9*r(), 0.2, b + 0.9*r()};
+	if length(to_be_center - xyz(4, 0.2, 0)) > 0.9 {
+	    using s := New(Sphere);
+	    center=to_be_center;
+	    radius=0.2;
+	    if mat < 0.8 {
+		albedo := rv(0, 1) * rv(0, 1);
+		material=Material.{material_kind=.LAMBERTIAN, albedo=albedo};
+	    } else if mat < 0.95 {
+		albedo := random_vector(0.5, 1.0);
+		fuzz := random_get_within_range(0.0, 0.5);
+		material=Material.{material_kind=.METAL, albedo=albedo, fuzz=fuzz};
+	    } else {
+		material=Material.{material_kind=.DIELECTRIC, refraction=1.5};
+	    }
+	    array_add(*hittables, s);
+	}
+    }
+
+    m1 := Material.{material_kind=.DIELECTRIC, refraction=1.5};
+    s1 := Sphere.{center=.{0, 1, 0}, radius=1.0, material=m1};
+    array_add(*hittables, *s1);
+
+    m2 := Material.{material_kind=.LAMBERTIAN, albedo=.{0.4, 0.2, 0.1}};
+    s2 := Sphere.{center=.{-4, 1, 0}, radius=1.0, material=m2};
+    array_add(*hittables, *s2);
+
+    m3 := Material.{material_kind=.METAL, albedo=.{0.7, 0.6, 0.5}, fuzz=0.0};
+    s3 := Sphere.{center=.{4, 1, 0}, radius=1.0, material=m3};
+    array_add(*hittables, *s3);
+
+    start := rdtsc();
 
     for y: 0..image_height - 1 {
-        log("Scanlines remaining %", image_height - 1 - y);
+        // log("Scanlines remaining %", image_height - 1 - y);
 
 	for x: 0..image_width - 1 {
 	    result_color: Vector3;
@@ -299,8 +369,9 @@ main :: () {
 		pixel_offset := generate_random_pixel_offset(
 		    pixel_delta_u, pixel_delta_v);
 
-		ray_direction := (pixel_location + pixel_offset) - lookfrom;
-		r := Ray.{lookfrom, ray_direction};
+		ray_origin := ifx defocus_angle <= 0 then lookfrom else defocus_disk_sample(c);
+		ray_direction := (pixel_location + pixel_offset) - ray_origin;
+		r := Ray.{ray_origin, ray_direction};
 		result_color += ray_color(r, hittables, max_depth);
 	    }
 	    r, g, b := to_rgb(result_color / cast(float) samples_per_pixel);
@@ -310,7 +381,13 @@ main :: () {
 	}
     }
 
-    log("Done.");
+    end := rdtsc();
+
+    // log("Done.");
+
+    elapsed_ticks := end - start;
+    log("Total ticks %, (% seconds), cpu_freq %", elapsed_ticks, cast(float)elapsed_ticks / cpu_freq, cpu_freq);
+    log("Image width %, samples per pixel %, max depth %", image_width, samples_per_pixel, max_depth);
 
     bitmap: Simp.Bitmap;
     format: Simp.Texture_Format = .RGB8;
@@ -328,7 +405,6 @@ main :: () {
 
 #scope_file
 
-deg_to_rad :: (v: float) -> float {
+deg_to_rad :: (v: $T) -> float {
     return (v * TAU) / 360.0;
 }
-
