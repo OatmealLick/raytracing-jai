@@ -1,9 +1,16 @@
 #import "Basic";
 #import "Math";
 #import "Random";
+#import "String";
+Simp :: #import "Simp";
+Windows :: #import "Windows";
+Input :: #import "Input";
+#import "Window_Creation";
 
-EPS :: 0.0001;
-ONE :: Vector3.{1, 1, 1};
+#load "material.jai";
+#load "util.jai";
+
+MAX_COLOR_VALUE :: 255;
 
 Ray :: struct {
     origin: Vector3;
@@ -19,12 +26,14 @@ Hittable_Kind :: enum {
 }
 
 Hittable :: struct {
-    kind: Hittable_Kind;
+    // based on this you can switch the implementations
+    hittable_kind: Hittable_Kind;
+    material: Material;
 }
 
 Sphere :: struct {
     #as using h: Hittable;
-    kind = .SPHERE;
+    hittable_kind = .SPHERE;
     
     center: Vector3;
     radius: float;
@@ -36,49 +45,11 @@ Hit_Record :: struct {
     // those two should always be set together
     normal: Vector3;
     front_face: bool;
-}
-
-Interval :: struct {
-    min: float;
-    max: float;
-}
-
-EMPTY_INTERVAL :: Interval.{min=FLOAT32_MAX, max=FLOAT32_MIN};
-UNIVERSE_INTERVAL :: Interval.{min=FLOAT32_MIN, max=FLOAT32_MAX};
-DEFAULT_INTERVAL :: Interval.{min=0.001, max=FLOAT32_MAX};
-
-interval_contains :: (using interval: Interval, value: float) -> bool {
-    return value >= min && value <= max;
-}
-
-interval_surrounds :: (using interval: Interval, value: float) -> bool {
-    return value > min && value < max;
-}
-
-interval_clamp :: (using interval: Interval, value: float) -> float {
-    if value > max return max;
-    else if value < min return min;
-    else return value;
-}
-
-random :: (min: float, max: float) -> float {
-    return min + (max - min) * random_get_zero_to_one();
-}
-
-random_vector :: (min: float, max: float) -> Vector3 {
-    return .{
-        random(min, max),
-        random(min, max),
-        random(min, max) };
-}
-
-random_unit_vector :: () -> Vector3 {
-    v := random_vector(-1, 1);
-    return v / length(v);
+    material: Material;
 }
 
 hit :: (thing: *Hittable, using ray: Ray, interval: Interval) -> bool, Hit_Record {
-    if #complete thing.kind == {
+    if #complete thing.hittable_kind == {
         case .SPHERE;
 	    s := cast(*Sphere) thing;
 	    oc := origin - s.center;
@@ -102,6 +73,7 @@ hit :: (thing: *Hittable, using ray: Ray, interval: Interval) -> bool, Hit_Recor
 
 		t = t_candidate;
 		p = at(ray, t);
+		material = s.material;
 		normal = (p - s.center) / s.radius;
 
 		if dot(normal, dir) > 0.0 {
@@ -114,7 +86,7 @@ hit :: (thing: *Hittable, using ray: Ray, interval: Interval) -> bool, Hit_Recor
 		return true, record;
 	    }
 	case;
-	    log_error("Can't raycast with thing of kind %", thing.kind);
+	    log_error("Can't raycast with thing of kind %", thing.hittable_kind);
 	    return false, .{};
     }
 }
@@ -136,16 +108,16 @@ hit_closest :: (hittables: [] *Hittable, using ray: Ray, interval: Interval) -> 
     return any_success, r;
 }
 
-random_on_same_hemisphere :: (normal: Vector3) -> Vector3 {
-    r := random_unit_vector();
-    return ifx dot(normal, r) > 0.0 then r else -r;
-}
+ray_color :: (ray: Ray, hittables: [] *Hittable, depth: int) -> Vector3 {
+    if depth <= 0 return .{};
 
-ray_color :: (ray: Ray, hittables: [] *Hittable) -> Vector3 {
     success, r := hit_closest(hittables, ray, DEFAULT_INTERVAL);
     if success {
-	target := r.p + r.normal + random_on_same_hemisphere(r.normal);
-	return 0.5 * ray_color(.{r.p, target - r.p}, hittables);
+	// todo consider stack variables instead of allocations
+	ray_out := New(Ray);
+	attenuation := New(Vector3);
+	success := scatter(ray, r, ray_out, attenuation);
+	return ifx success then attenuation * ray_color(ray_out, hittables, depth - 1) else .{};
     } else {
         // draw sky
 	unit_dir := unit_vector(ray.dir);
@@ -160,42 +132,165 @@ generate_random_pixel_offset :: (pixel_delta_u: Vector3, pixel_delta_v: Vector3)
     return px * pixel_delta_u + py * pixel_delta_v;
 }
 
+state: RenderState;
+
+linear_to_gamma :: (value: float) -> float {
+    return sqrt(value);
+}
+
+to_rgb :: (color: Vector3) -> u8, u8, u8 {
+    r := cast(u8) (linear_to_gamma(color.x) * MAX_COLOR_VALUE);
+    g := cast(u8) (linear_to_gamma(color.y) * MAX_COLOR_VALUE);
+    b := cast(u8) (linear_to_gamma(color.z) * MAX_COLOR_VALUE);
+    return r, g, b;
+}
+
+RenderState :: struct {
+    quit := false;
+    width: int;
+    height: int;
+    window: Window_Type;
+    texture: Simp.Texture;
+}
+
+initialize_rendering :: (width: int, height: int) -> RenderState {
+    Windows.SetProcessDPIAware();
+    // Windows is very bad at thread-switching by default unless you do this. Sad.
+    Windows.timeBeginPeriod(1);
+    window := create_window(width, height, "Raytracing Output");
+
+    Simp.set_render_target(window);
+
+    state := RenderState.{};
+    state.width = width;
+    state.height = height;
+    state.window = window;
+    return state;
+}
+
+render_frame :: (using state: *RenderState) {
+    Input.update_window_events();
+
+    for Input.events_this_frame {
+	if it.type == .QUIT then quit = true;
+
+	if it.type == {
+	    case .KEYBOARD;
+	    if it.key_pressed && (it.key_code == .ESCAPE) {
+		quit = true;
+	    }
+	}
+    }
+
+    Simp.clear_render_target(.15, .15, .15, 1);
+
+    Simp.set_shader_for_images(*state.texture);
+    Simp.immediate_begin();
+
+    v2 :: (x: int, y: int) -> Vector2 {
+	return make_vector2(cast(float)x, cast(float)y);
+    }
+    Simp.immediate_quad(v2(0, 0), v2(width, 0), v2(width, height), v2(0, height));
+    Simp.immediate_flush();
+    
+    Simp.swap_buffers(window);
+}
+
+lo :: (format_string: string, args: .. Any) {
+    log_error(format_string, ..args);
+}
+
+Camera :: struct {
+    // use create_camera(...) to properly initialize
+    lookfrom: Vector3;
+    lookat: Vector3;
+    vup: Vector3;
+    vfov: int;
+
+    // to be set by create_camera(...)
+    pixel_delta_u: Vector3;
+    pixel_delta_v: Vector3;
+    p00_location: Vector3;
+}
+
+create_camera :: (_lookfrom: Vector3,
+		  _lookat: Vector3,
+		  _vup: Vector3,
+		  _vfov: int,
+		  image_width: int,
+		  image_height: int) -> Camera
+{
+    using c: Camera = ---;
+    lookfrom = _lookfrom;
+    lookat = _lookat;
+    vup = _vup;
+    vfov = _vfov;
+
+    focal_length := length(lookfrom - lookat);
+    theta := deg_to_rad(xx vfov);
+    h := tan(theta / 2.0);
+    viewport_height := 2 * h * focal_length;
+    viewport_width := viewport_height * (cast(float) image_width / image_height);
+
+    w := unit_vector(lookfrom - lookat);
+    u := unit_vector(cross(vup, w));
+    v := cross(w, u);
+
+    viewport_u := viewport_width * u;
+    viewport_v := viewport_height * -v;
+    pixel_delta_u = viewport_u / cast(float) image_width;
+    pixel_delta_v = viewport_v / cast(float) image_height;
+
+    p00_location = lookfrom
+	- (focal_length * w)
+	- viewport_u / 2.0
+	- viewport_v / 2.0
+	+ pixel_delta_u / 2.0
+	+ pixel_delta_v / 2.0;
+    return c;
+}
+
 main :: () {
     image_width := 400;
     aspect_ratio := 16.0 / 9.0;
     image_height := cast(int) (cast(float) image_width / aspect_ratio);
     samples_per_pixel := 10;
+    max_depth := 10;
+
+    using c := create_camera(
+	_lookfrom = Vector3.{-2, 2, 1},
+	_lookat = Vector3.{0, 0, -1},
+	_vup = Vector3.{0, 1, 0},
+	_vfov = 90,
+	image_width=image_width,
+	image_height=image_height
+    );
 
     if image_height < 1 then image_height = 1;
 
-    focal_length := 1.0;
-    viewport_height := 2.0;
-    viewport_width := viewport_height * (cast(float) image_width / image_height);
-    camera_center := Vector3.{0.0, 0.0, 0.0};
+    state = initialize_rendering(image_width, image_height);
+    texture_data := NewArray(3 * image_width * image_height, u8);
 
-    viewport_u := Vector3.{viewport_width, 0.0, 0.0};
-    viewport_v := Vector3.{0.0, -viewport_height, 0.0};
-    pixel_delta_u := viewport_u / cast(float) image_width;
-    pixel_delta_v := viewport_v / cast(float) image_height;
+    material_ground := Material.{material_kind=.LAMBERTIAN, albedo=.{0.8, 0.8, 0.0}};
+    material_center := Material.{material_kind=.LAMBERTIAN, albedo=.{0.1, 0.2, 0.5}};
+    material_left   := Material.{material_kind=.DIELECTRIC, refraction=1.5};
+    material_right  := Material.{material_kind=.METAL, albedo=.{0.8, 0.6, 0.2}, fuzz=0.0};
 
-    p00_location := camera_center
-	- .{0.0, 0.0, focal_length} 
-	- viewport_u / 2.0
-	- viewport_v / 2.0
-	+ pixel_delta_u / 2.0
-	+ pixel_delta_v / 2.0;
+    ground := Sphere.{center=.{0, -100.5, -1}, radius=100, material=material_ground};
+    center := Sphere.{center=.{0, 0, -1}, radius=0.5, material=material_center};
+    left   := Sphere.{center=.{-1, 0, -1}, radius=0.5, material=material_left};
+    hollow := Sphere.{center=.{-1, 0, -1}, radius=-0.4, material=material_left};
+    right  := Sphere.{center=.{1, 0, -1}, radius=0.5, material=material_right};
+    
+    hittables: [] *Hittable = .[
+	    *ground, *center, *left, *hollow, *right
+    ];
 
-    sphere := Sphere.{center=.{0, 0, -1}, radius=0.5};
-    ground := Sphere.{center=.{0, -100.5, -1}, radius=100};
-    hittables: [] *Hittable = .[*sphere, *ground];
-
-    print("P3\n% %\n%\n", image_width, image_height, 255);
     for y: 0..image_height - 1 {
-        lo("Scanlines remaining %", image_height - 1 - y);
+        log("Scanlines remaining %", image_height - 1 - y);
 
 	for x: 0..image_width - 1 {
-	    result_color: Vector3; // make sure its zero
-	    if y == 0 && x == 0 lo("Result color inited to %\n", result_color);
+	    result_color: Vector3;
 
 	    for 0..samples_per_pixel-1 {
 		pixel_location := p00_location
@@ -204,29 +299,36 @@ main :: () {
 		pixel_offset := generate_random_pixel_offset(
 		    pixel_delta_u, pixel_delta_v);
 
-		ray_direction := (pixel_location + pixel_offset) - camera_center;
-		r := Ray.{camera_center, ray_direction};
-		result_color += ray_color(r, hittables);
+		ray_direction := (pixel_location + pixel_offset) - lookfrom;
+		r := Ray.{lookfrom, ray_direction};
+		result_color += ray_color(r, hittables, max_depth);
 	    }
-	    print_color(result_color / cast(float) samples_per_pixel);
+	    r, g, b := to_rgb(result_color / cast(float) samples_per_pixel);
+	    texture_data[3 * (y * image_width + x)] = r;
+	    texture_data[3 * (y * image_width + x) + 1] = g;
+	    texture_data[3 * (y * image_width + x) + 2] = b;
 	}
     }
 
-    lo("Done.");
+    log("Done.");
+
+    bitmap: Simp.Bitmap;
+    format: Simp.Texture_Format = .RGB8;
+    // no need for copy
+    Simp.bitmap_alloc(*bitmap, xx image_width, xx image_height, format);
+    memcpy(bitmap.data.data, texture_data.data, bitmap.stride*bitmap.height);
+
+    success := Simp.texture_load_from_bitmap(*state.texture, *bitmap);
+
+    while !state.quit {
+	render_frame(*state);
+    }
+    sleep_milliseconds(50);
 }
 
-print_color :: (color: Vector3) {
-    // vector should have values from [0.0, 1.0]
-    // assert(color.x >= 0 && color.x <= 1.0, "Color component is not within range, color %", color);
-    // assert(color.y >= 0 && color.y <= 1.0, "Color component is not within range, color %", color);
-    // assert(color.z >= 0 && color.z <= 1.0, "Color component is not within range, color %", color);
-    max_color_value := 255;
-    r := cast(int) (color.x * max_color_value);
-    g := cast(int) (color.y * max_color_value);
-    b := cast(int) (color.z * max_color_value);
-    print("% % %\n", r, g, b);
+#scope_file
+
+deg_to_rad :: (v: float) -> float {
+    return (v * TAU) / 360.0;
 }
 
-lo :: (format_string: string, args: .. Any) {
-    log_error(format_string, ..args);
-}
