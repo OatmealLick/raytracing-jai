@@ -18,30 +18,20 @@ Material_Kind :: enum {
     ray_out: scattered ray, the result of the hit
 */
 scatter :: (ray_in: Ray,
-	    r: Hit_Record,
-	    ray_out: *Ray,
-	    attenuation: *Vector3) -> bool {
+	    r: Hit_Record) -> bool, Ray, Vector3 {
     using r.material;
     if #complete material_kind == {
 	case .LAMBERTIAN; {
 	    direction := r.normal + random_on_same_hemisphere(r.normal);
 	    if near_zero(direction) direction = r.normal;
-	    ray_out.origin = r.p;
-	    ray_out.dir = direction;
-	    attenuation.x = albedo.x;
-	    attenuation.y = albedo.y;
-	    attenuation.z = albedo.z;
-	    return true;
+	    ray_out := Ray.{r.p, direction};
+	    return true, ray_out, albedo;
 	}
 	case .METAL; {
 	    reflected := reflect(unit_vector(ray_in.dir), r.normal);
 	    scattered_dir := reflected + fuzz * random_unit_vector();
-	    ray_out.origin = r.p;
-	    ray_out.dir = scattered_dir;
-	    attenuation.x = albedo.x;
-	    attenuation.y = albedo.y;
-	    attenuation.z = albedo.z;
-	    return dot(scattered_dir, r.normal) > 0;
+	    ray_out := Ray.{r.p, scattered_dir};
+	    return dot(scattered_dir, r.normal) > 0, ray_out, albedo;
 	}
 	case .DIELECTRIC; {
 	    refraction_ratio := ifx r.front_face then (1.0 / refraction) else refraction;
@@ -60,12 +50,7 @@ scatter :: (ray_in: Ray,
 		direction = reflect(unit_direction, r.normal);
 	    }
 
-	    ray_out.origin = r.p;
-	    ray_out.dir = direction;
-	    attenuation.x = 1.0;
-	    attenuation.y = 1.0;
-	    attenuation.z = 1.0;
-	    return true;
+	    return true, .{r.p, direction}, .{1, 1, 1};
 	}
     }
 }

@@ -117,10 +117,7 @@ ray_color :: (ray: Ray, hittables: [] *Hittable, depth: int) -> Vector3 {
 
     success, r := hit_closest(hittables, ray, DEFAULT_INTERVAL);
     if success {
-	// todo consider stack variables instead of allocations
-	ray_out := New(Ray);
-	attenuation := New(Vector3);
-	success := scatter(ray, r, ray_out, attenuation);
+	success, ray_out, attenuation := scatter(ray, r);
 	return ifx success then attenuation * ray_color(ray_out, hittables, depth - 1) else .{};
     } else {
         // draw sky
