@@ -8,10 +8,6 @@ Input :: #import "Input";
 #import "Window_Creation";
 #import "Machine_X64";
 
-#load "material.jai";
-#load "util.jai";
-#load "time-cpu.jai";
-
 MAX_COLOR_VALUE :: 255;
 
 Ray :: struct {
@@ -277,8 +273,8 @@ main :: () {
     image_width := 200;
     aspect_ratio := 16.0 / 9.0;
     image_height := cast(int) (cast(float) image_width / aspect_ratio);
-    samples_per_pixel := 10;
-    max_depth := 10;
+    samples_per_pixel := 5;
+    max_depth := 5;
 
     using c := create_camera(
     _lookfrom = Vector3.{13, 2, 3},
@@ -355,7 +351,7 @@ main :: () {
     start := rdtsc();
 
     for y: 0..image_height - 1 {
-        // log("Scanlines remaining %", image_height - 1 - y);
+        log("Scanlines remaining %", image_height - 1 - y);
 
     for x: 0..image_width - 1 {
         result_color: Vector3;
@@ -401,8 +397,152 @@ main :: () {
     sleep_milliseconds(50);
 }
 
-#scope_file
-
 deg_to_rad :: (v: $T) -> float {
     return (v * TAU) / 360.0;
+}
+
+Material :: struct {
+    material_kind: Material_Kind;
+    albedo: Vector3;
+    fuzz := 1.0; // metal materials only
+    refraction := 1.0; // index of refraction, dielectric only
+}
+
+Material_Kind :: enum {
+    LAMBERTIAN :: 0;
+    METAL :: 1;
+    DIELECTRIC :: 2;
+}
+
+/*
+    ray_in: incoming ray that hit the surface
+    ray_out: scattered ray, the result of the hit
+*/
+scatter :: (ray_in: Ray,
+	    r: Hit_Record) -> bool, Ray, Vector3
+{
+    using r.material;
+    if #complete material_kind == {
+	case .LAMBERTIAN; {
+	    direction := r.normal + random_on_same_hemisphere(r.normal);
+	    if near_zero(direction) direction = r.normal;
+	    ray_out := Ray.{r.p, direction};
+	    return true, ray_out, albedo;
+	}
+	case .METAL; {
+	    reflected := reflect(unit_vector(ray_in.dir), r.normal);
+	    scattered_dir := reflected + fuzz * random_unit_vector();
+	    ray_out := Ray.{r.p, scattered_dir};
+	    return dot(scattered_dir, r.normal) > 0, ray_out, albedo;
+	}
+	case .DIELECTRIC; {
+	    refraction_ratio := ifx r.front_face then (1.0 / refraction) else refraction;
+	    unit_direction := unit_vector(ray_in.dir);
+
+	    cos_theta := min(dot(-unit_direction, r.normal), 1.0);
+	    sin_theta := sqrt(1.0 - cos_theta * cos_theta);
+
+	    can_refract_p1 := refraction_ratio * sin_theta <= 1.0;
+	    can_refract_p2 := !(reflectance(cos_theta, refraction_ratio) > random_get_zero_to_one_open());
+	    direction: Vector3 = ---;
+
+	    if can_refract_p1 && can_refract_p2 {
+		direction = refract(unit_direction, r.normal, refraction_ratio);
+	    } else {
+		direction = reflect(unit_direction, r.normal);
+	    }
+
+	    return true, .{r.p, direction}, .{1, 1, 1};
+	}
+    }
+}
+
+
+EPS :: 0.0001;
+ONE :: Vector3.{1, 1, 1};
+
+Interval :: struct {
+    min: float;
+    max: float;
+}
+
+EMPTY_INTERVAL :: Interval.{min=FLOAT32_MAX, max=FLOAT32_MIN};
+UNIVERSE_INTERVAL :: Interval.{min=FLOAT32_MIN, max=FLOAT32_MAX};
+DEFAULT_INTERVAL :: Interval.{min=0.001, max=FLOAT32_MAX};
+
+interval_contains :: (using interval: Interval, value: float) -> bool {
+    return value >= min && value <= max;
+}
+
+interval_surrounds :: (using interval: Interval, value: float) -> bool {
+    return value > min && value < max;
+}
+
+interval_clamp :: (using interval: Interval, value: float) -> float {
+    if value > max return max;
+    else if value < min return min;
+    else return value;
+}
+
+random :: (min: float, max: float) -> float {
+    return min + (max - min) * random_get_zero_to_one();
+}
+
+random_vector :: (min: float, max: float) -> Vector3 {
+    return .{
+        random(min, max),
+        random(min, max),
+        random(min, max) };
+}
+
+random_unit_vector :: () -> Vector3 {
+    v := random_vector(-1, 1);
+    return v / length(v);
+}
+
+random_on_same_hemisphere :: (normal: Vector3) -> Vector3 {
+    r := random_unit_vector();
+    return ifx dot(normal, r) > 0.0 then r else -r;
+}
+
+reflect :: (v: Vector3, n: Vector3) -> Vector3 {
+    return v - 2 * dot(v, n) * n;
+}
+
+refract :: (uv: Vector3, n: Vector3, etai_over_etat: float) -> Vector3 {
+    cos_theta := min(dot(-uv, n), 1.0);
+    r_out_perp := etai_over_etat * (uv + cos_theta * n);
+    r_out_parallel := -sqrt(abs(1.0 - length_squared(r_out_perp))) * n;
+    return r_out_perp + r_out_parallel;
+}
+
+estimate_cpu_frequency :: (millis_to_wait: int = 100) -> u64 {
+    nanos_to_wait := 1000_000 * millis_to_wait;
+
+    apollo_start := current_time_consensus();
+    cpu_start := rdtsc();
+
+    apollo_end := current_time_consensus();
+    elapsed_nanos := to_nanoseconds(apollo_end - apollo_start);
+    while elapsed_nanos < nanos_to_wait {
+	apollo_end = current_time_consensus();
+	elapsed_nanos = to_nanoseconds(apollo_end - apollo_start);
+    }
+    cpu_end := rdtsc();
+    elapsed_ticks := cpu_end - cpu_start;
+    cpu_freq_in_ghz := cast(float64) elapsed_ticks / (elapsed_nanos);
+    return cast(u64) (cpu_freq_in_ghz * 1_000_000_000);
+}
+
+
+#scope_file
+
+near_zero :: (v: Vector3) -> bool {
+    return abs(v.x) < EPS && abs(v.y) < EPS && abs(v.z) < EPS;
+}
+
+reflectance :: (cosine: float, ref_idx: float) -> float {
+    r0 := (1-ref_idx) / (1+ref_idx);
+    r0 = r0 * r0;
+    return r0 + (1-r0) * pow((1 - cosine), 5);
 }

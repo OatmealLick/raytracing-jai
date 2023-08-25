@@ -18,7 +18,8 @@ Material_Kind :: enum {
     ray_out: scattered ray, the result of the hit
 */
 scatter :: (ray_in: Ray,
-	    r: Hit_Record) -> bool, Ray, Vector3 {
+	    r: Hit_Record) -> bool, Ray, Vector3
+{
     using r.material;
     if #complete material_kind == {
 	case .LAMBERTIAN; {
